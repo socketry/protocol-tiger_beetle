@@ -1,0 +1,1 @@
+void Init_Protocol_TigerBeetle_Checksum(VALUE Protocol_TigerBeetle);
