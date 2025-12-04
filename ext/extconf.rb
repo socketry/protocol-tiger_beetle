@@ -29,7 +29,8 @@ unless pkg_config("libaegis")
 		$LDFLAGS << " -L#{libaegis_lib}"
 		$LIBS << " -laegis"
 	else
-		abort "libaegis not found. Please install libaegis: brew install libaegis"
+		# Hope for the best:
+		$LIBS << " -laegis"
 	end
 end
 

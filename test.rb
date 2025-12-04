@@ -14,8 +14,8 @@ def release_version(major, minor, patch)
 end
 
 RELEASE = release_version(0, 16, 66)  # Match bin/tigerbeetle version
-BATCH_SIZE = 8
-BENCHMARK_DURATION = 5.0  # seconds
+BATCH_SIZE = ARGV[0]&.to_i || 10
+BENCHMARK_DURATION = 30.0  # seconds
 
 stream = TCPSocket.new("localhost", 3000)
 stream.nonblock = false

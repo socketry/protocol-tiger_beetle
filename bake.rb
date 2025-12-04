@@ -29,7 +29,7 @@ def after_gem_release_version_increment(version)
 end
 
 # TIGER_BEETLE = "external/tigerbeetle/tigerbeetle"
-TIGER_BEETLE = "bin/tigerbeetle"
+TIGER_BEETLE = "tigerbeetle"
 
 def setup
 	require "fileutils"
@@ -37,7 +37,7 @@ def setup
 	FileUtils.mkdir_p("data")
 	
 	# ./tigerbeetle format --cluster=0 --replica=0 --replica-count=1 --development ./0_0.tigerbeetle
-	system(TIGER_BEETLE, "format", "--cluster=0", "--replica=0", "--replica-count=1", "--development", "./data/0_0.tigerbeetle")
+	system(TIGER_BEETLE, "format", "--cluster=0", "--replica=0", "--replica-count=1", "./data/0_0.tigerbeetle")
 end
 
 def server

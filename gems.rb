@@ -8,8 +8,6 @@ source "https://rubygems.org"
 # Specify your gem's dependencies in protocol-http.gemspec
 gemspec
 
-gem "vernier"
-
 group :maintenance, optional: true do
 	gem "bake-modernize"
 	gem "bake-gem"
@@ -18,6 +16,8 @@ group :maintenance, optional: true do
 	gem "agent-context"
 	
 	gem "utopia-project"
+	
+	gem "vernier"
 end
 
 group :test do
