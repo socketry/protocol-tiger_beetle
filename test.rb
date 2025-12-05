@@ -46,9 +46,47 @@ session = register_reply.header.session
 parent = register_reply.header.context
 puts "Registered! Session: #{session}"
 
-# Use existing accounts 1 and 2 (ledger: 700, code: 10)
+# Create accounts 1 and 2 (ledger: 700, code: 10)
 debit_account_id = 1
 credit_account_id = 2
+
+request_number += 1
+request = Protocol::TigerBeetle::Request.with(
+	cluster: 0,
+	client_id: client_id,
+	session: session,
+	request_number: request_number,
+	operation: Protocol::TigerBeetle::Operation::CREATE_ACCOUNTS,
+	parent: parent,
+	release: RELEASE,
+)
+
+accounts = [
+	Protocol::TigerBeetle::Account.new(debit_account_id, ledger: 700, code: 10),
+	Protocol::TigerBeetle::Account.new(credit_account_id, ledger: 700, code: 10),
+]
+
+packet.header = request
+packet.pack(accounts)
+connection.write(packet)
+
+account_reply = connection.read
+parent = account_reply.header.context
+account_results = account_reply.unpack(operation: Protocol::TigerBeetle::Operation::CREATE_ACCOUNTS)
+
+if account_results.any?
+	account_results.each do |result|
+		result_code = result.result
+		# Result 21 means EXISTS - that's OK
+		if result_code == Protocol::TigerBeetle::CreateAccountResult::EXISTS
+			puts "Account #{accounts[result.index].id} already exists (OK)"
+		elsif result_code != Protocol::TigerBeetle::CreateAccountResult::OK
+			puts "Warning: Failed to create account #{accounts[result.index].id}: result=#{result_code}"
+		end
+	end
+else
+	puts "Accounts created successfully"
+end
 
 $transfer_id = SecureRandom.random_number(2**64) # Start with a random base
 
@@ -96,6 +134,18 @@ while clock.total < BENCHMARK_DURATION
 	
 	reply = connection.read
 	parent = reply.header.context
+	
+	# Unpack the reply to get result records
+	results = reply.unpack(operation: Protocol::TigerBeetle::Operation::CREATE_TRANSFERS)
+	
+	# Check for any errors (non-OK results)
+	errors = results.select{|record| record.result != Protocol::TigerBeetle::CreateTransferResult::OK}
+	if errors.any?
+		puts "Warning: #{errors.size} transfer(s) failed in batch #{batch_count + 1}"
+		errors.each do |error|
+			puts "  Transfer at index #{error.index}: result=#{error.result}"
+		end
+	end
 	
 	total_transfers += BATCH_SIZE
 	batch_count += 1

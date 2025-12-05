@@ -26,10 +26,14 @@ end
 def after_gem_release_version_increment(version)
 	context["releases:update"].call(version)
 	context["utopia:project:update"].call
-end
+endb
 
 # TIGER_BEETLE = "external/tigerbeetle/tigerbeetle"
-TIGER_BEETLE = "tigerbeetle"
+if File.exist?("bin/tigerbeetle")
+	TIGER_BEETLE = "bin/tigerbeetle"
+else
+	TIGER_BEETLE = "tigerbeetle"
+end
 
 def setup
 	require "fileutils"

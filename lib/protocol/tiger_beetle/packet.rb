@@ -3,6 +3,11 @@
 require_relative "native"
 require_relative "header"
 require_relative "multi_batch"
+require_relative "account"
+require_relative "transfer"
+require_relative "account_balance"
+require_relative "create_accounts_result"
+require_relative "create_transfers_result"
 
 module Protocol
 	module TigerBeetle
@@ -115,6 +120,65 @@ module Protocol
 			
 			def data
 				@buffer.slice(0, self.size)
+			end
+			
+			# Unpack records from the reply body.
+			# @parameter operation [Integer] The operation code that generated this reply (optional).
+			# @parameter record_class [Class] The record class to unpack (optional, inferred from operation if not provided).
+			# @returns [Array] Array of unpacked records, or empty array if no body.
+			def unpack(operation: nil, record_class: nil)
+				return [] unless @header
+				
+				body_size = self.size - Header::HEADER_SIZE
+				return [] if body_size <= 0
+				
+				body_offset = Header::HEADER_SIZE
+				
+				# Determine record class from operation if not provided
+				if record_class.nil? && operation
+					record_class = self.class.record_class_for_operation(operation)
+				end
+				
+				# If still no record class, return empty array
+				return [] unless record_class
+				
+				# Determine element size
+				element_size = record_class::SIZE
+				
+				# Check if this operation uses multi-batch encoding
+				if operation && MULTI_BATCH_OPERATIONS.include?(operation)
+					MultiBatch.decode(@buffer, body_offset, body_size, element_size, record_class)
+				else
+					# Simple unpacking - just read records sequentially
+					records = []
+					offset = body_offset
+					while offset < body_offset + body_size
+						record = record_class.unpack(@buffer, offset)
+						records << record
+						offset += element_size
+					end
+					records
+				end
+			end
+			
+			# Map operation codes to their corresponding record classes for replies.
+			# @parameter operation [Integer] The operation code.
+			# @returns [Class, nil] The record class for the operation, or nil if unknown.
+			def self.record_class_for_operation(operation)
+				case operation
+				when Operation::CREATE_ACCOUNTS
+					CreateAccountsResult
+				when Operation::CREATE_TRANSFERS
+					CreateTransfersResult
+				when Operation::LOOKUP_ACCOUNTS, Operation::QUERY_ACCOUNTS
+					Account
+				when Operation::LOOKUP_TRANSFERS, Operation::GET_ACCOUNT_TRANSFERS, Operation::QUERY_TRANSFERS
+					Transfer
+				when Operation::GET_ACCOUNT_BALANCES
+					AccountBalance
+				else
+					nil
+				end
 			end
 		end
 	end
