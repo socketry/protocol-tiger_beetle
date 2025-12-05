@@ -4,6 +4,7 @@
 require "securerandom"
 require "io/nonblock"
 require "async/clock"
+require "optparse"
 
 require_relative "config/environment"
 require_relative "lib/protocol/tiger_beetle"
@@ -14,8 +15,44 @@ def release_version(major, minor, patch)
 end
 
 RELEASE = release_version(0, 16, 66)  # Match bin/tigerbeetle version
+
+# TigerBeetle protocol limits:
+# - message_size_max = 1 MB (1,048,576 bytes)
+# - Header size = 256 bytes
+# - Transfer size = 128 bytes
+# - Multi-batch trailer (single batch) = 128 bytes (padded to element size)
+# Maximum transfers per batch = (1,048,576 - 256 - 128) / 128 = 8,188
+MESSAGE_SIZE_MAX = 1048576
+HEADER_SIZE = 256
+TRANSFER_SIZE = 128
+MULTI_BATCH_TRAILER_SIZE = 128  # For single batch
+MAX_TRANSFERS_PER_BATCH = (MESSAGE_SIZE_MAX - HEADER_SIZE - MULTI_BATCH_TRAILER_SIZE) / TRANSFER_SIZE
+
+# Parse command line options
+options = {}
+OptionParser.new do |opts|
+	opts.banner = "Usage: test.rb [BATCH_SIZE] [options]"
+	
+	opts.on("--invalid-account-ids", "Use invalid account IDs to benchmark without I/O overhead") do
+		options[:invalid_account_ids] = true
+	end
+	
+	opts.on("-h", "--help", "Show this help message") do
+		puts opts
+		puts "\nBATCH_SIZE: Number of transfers per batch (default: 10, max: #{MAX_TRANSFERS_PER_BATCH.to_i})"
+		exit
+	end
+end.parse!
+
 BATCH_SIZE = ARGV[0]&.to_i || 10
 BENCHMARK_DURATION = 30.0  # seconds
+USE_INVALID_ACCOUNT_IDS = options[:invalid_account_ids] || false
+
+if BATCH_SIZE > MAX_TRANSFERS_PER_BATCH
+	puts "Warning: Batch size #{BATCH_SIZE} exceeds protocol maximum of #{MAX_TRANSFERS_PER_BATCH.to_i}"
+	puts "Messages larger than #{MESSAGE_SIZE_MAX} bytes will be corrupted."
+	exit 1
+end
 
 stream = TCPSocket.new("localhost", 3000)
 stream.nonblock = false
@@ -46,46 +83,54 @@ session = register_reply.header.session
 parent = register_reply.header.context
 puts "Registered! Session: #{session}"
 
-# Create accounts 1 and 2 (ledger: 700, code: 10)
-debit_account_id = 1
-credit_account_id = 2
-
-request_number += 1
-request = Protocol::TigerBeetle::Request.with(
-	cluster: 0,
-	client_id: client_id,
-	session: session,
-	request_number: request_number,
-	operation: Protocol::TigerBeetle::Operation::CREATE_ACCOUNTS,
-	parent: parent,
-	release: RELEASE,
-)
-
-accounts = [
-	Protocol::TigerBeetle::Account.new(debit_account_id, ledger: 700, code: 10),
-	Protocol::TigerBeetle::Account.new(credit_account_id, ledger: 700, code: 10),
-]
-
-packet.header = request
-packet.pack(accounts)
-connection.write(packet)
-
-account_reply = connection.read
-parent = account_reply.header.context
-account_results = account_reply.unpack(operation: Protocol::TigerBeetle::Operation::CREATE_ACCOUNTS)
-
-if account_results.any?
-	account_results.each do |result|
-		result_code = result.result
-		# Result 21 means EXISTS - that's OK
-		if result_code == Protocol::TigerBeetle::CreateAccountResult::EXISTS
-			puts "Account #{accounts[result.index].id} already exists (OK)"
-		elsif result_code != Protocol::TigerBeetle::CreateAccountResult::OK
-			puts "Warning: Failed to create account #{accounts[result.index].id}: result=#{result_code}"
-		end
-	end
+# Setup account IDs for testing
+if USE_INVALID_ACCOUNT_IDS
+	# Use account IDs 3 and 4 which don't exist - benchmarks protocol overhead without I/O
+	debit_account_id = 3
+	credit_account_id = 4
+	puts "Using INVALID account IDs #{debit_account_id} and #{credit_account_id} (protocol-only benchmark)"
 else
-	puts "Accounts created successfully"
+	# Create accounts 1 and 2 (ledger: 700, code: 10)
+	debit_account_id = 1
+	credit_account_id = 2
+	
+	request_number += 1
+	request = Protocol::TigerBeetle::Request.with(
+		cluster: 0,
+		client_id: client_id,
+		session: session,
+		request_number: request_number,
+		operation: Protocol::TigerBeetle::Operation::CREATE_ACCOUNTS,
+		parent: parent,
+		release: RELEASE,
+	)
+	
+	accounts = [
+		Protocol::TigerBeetle::Account.new(debit_account_id, ledger: 700, code: 10),
+		Protocol::TigerBeetle::Account.new(credit_account_id, ledger: 700, code: 10),
+	]
+	
+	packet.header = request
+	packet.pack(accounts)
+	connection.write(packet)
+	
+	account_reply = connection.read
+	parent = account_reply.header.context
+	account_results = account_reply.unpack(operation: Protocol::TigerBeetle::Operation::CREATE_ACCOUNTS)
+	
+	if account_results.any?
+		account_results.each do |result|
+			result_code = result.result
+			# Result 21 means EXISTS - that's OK
+			if result_code == Protocol::TigerBeetle::CreateAccountResult::EXISTS
+				puts "Account #{accounts[result.index].id} already exists (OK)"
+			elsif result_code != Protocol::TigerBeetle::CreateAccountResult::OK
+				puts "Warning: Failed to create account #{accounts[result.index].id}: result=#{result_code}"
+			end
+		end
+	else
+		puts "Accounts created successfully"
+	end
 end
 
 $transfer_id = SecureRandom.random_number(2**64) # Start with a random base
@@ -107,7 +152,12 @@ def generate_transfers(batch_size, debit_account_id, credit_account_id)
 	transfers
 end
 
+puts ""
 puts "Benchmarking with batches of #{BATCH_SIZE} transfers for ~#{BENCHMARK_DURATION}s..."
+puts "(Maximum safe batch size: #{MAX_TRANSFERS_PER_BATCH.to_i} transfers)"
+if USE_INVALID_ACCOUNT_IDS
+	puts "(Using invalid accounts - benchmarking protocol overhead only, no I/O)"
+end
 
 total_transfers = 0
 batch_count = 0
@@ -141,9 +191,21 @@ while clock.total < BENCHMARK_DURATION
 	# Check for any errors (non-OK results)
 	errors = results.select{|record| record.result != Protocol::TigerBeetle::CreateTransferResult::OK}
 	if errors.any?
-		puts "Warning: #{errors.size} transfer(s) failed in batch #{batch_count + 1}"
-		errors.each do |error|
-			puts "  Transfer at index #{error.index}: result=#{error.result}"
+		# When using invalid account IDs, we expect all transfers to fail with error 21
+		if USE_INVALID_ACCOUNT_IDS
+			# Suppress expected errors, only report unexpected ones
+			unexpected_errors = errors.reject{|e| e.result == Protocol::TigerBeetle::CreateTransferResult::DEBIT_ACCOUNT_NOT_FOUND}
+			if unexpected_errors.any?
+				puts "Warning: #{unexpected_errors.size} transfer(s) failed with unexpected errors in batch #{batch_count + 1}"
+				unexpected_errors.each do |error|
+					puts "  Transfer at index #{error.index}: result=#{error.result}"
+				end
+			end
+		else
+			puts "Warning: #{errors.size} transfer(s) failed in batch #{batch_count + 1}"
+			errors.each do |error|
+				puts "  Transfer at index #{error.index}: result=#{error.result}"
+			end
 		end
 	end
 	
